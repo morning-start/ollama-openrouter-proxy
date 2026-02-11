@@ -1,24 +1,25 @@
-package main
+package server
 
 import (
 	"database/sql"
-	_ "github.com/mattn/go-sqlite3"
 	"os"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 type FailureStore struct {
-	db *sql.DB
-	defaultCooldown time.Duration
+	db                *sql.DB
+	defaultCooldown   time.Duration
 	rateLimitCooldown time.Duration
 }
 
 func NewFailureStore(path string) (*FailureStore, error) {
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
-	// Updated schema with failure type
+
 	if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS failures (
 		model TEXT PRIMARY KEY, 
 		failed_at INTEGER,
@@ -28,25 +29,24 @@ func NewFailureStore(path string) (*FailureStore, error) {
 		db.Close()
 		return nil, err
 	}
-	
-	// Set default cooldown periods
+
 	defaultCooldown := 5 * time.Minute
 	if cd := os.Getenv("FAILURE_COOLDOWN_MINUTES"); cd != "" {
 		if minutes, err := time.ParseDuration(cd + "m"); err == nil {
 			defaultCooldown = minutes
 		}
 	}
-	
+
 	rateLimitCooldown := 1 * time.Minute
 	if cd := os.Getenv("RATELIMIT_COOLDOWN_MINUTES"); cd != "" {
 		if minutes, err := time.ParseDuration(cd + "m"); err == nil {
 			rateLimitCooldown = minutes
 		}
 	}
-	
+
 	return &FailureStore{
-		db: db,
-		defaultCooldown: defaultCooldown,
+		db:                db,
+		defaultCooldown:   defaultCooldown,
 		rateLimitCooldown: rateLimitCooldown,
 	}, nil
 }
@@ -80,19 +80,17 @@ func (s *FailureStore) ShouldSkip(model string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	
-	// Use different cooldown periods based on failure type
+
 	var cooldown time.Duration
 	if failureType == "rate_limit" {
 		cooldown = s.rateLimitCooldown
 	} else {
 		cooldown = s.defaultCooldown
-		// Exponential backoff for repeated failures
 		if failureCount > 1 {
 			cooldown = cooldown * time.Duration(min(failureCount, 5))
 		}
 	}
-	
+
 	if time.Since(time.Unix(ts, 0)) < cooldown {
 		return true, nil
 	}
@@ -106,18 +104,14 @@ func min(a, b int) int {
 	return b
 }
 
-// ClearFailure removes a model from the failure store (for successful requests)
 func (s *FailureStore) ClearFailure(model string) error {
-	// Instead of deleting, reset the failure count but keep the record
-	// This helps track patterns over time
 	_, err := s.db.Exec(`UPDATE failures SET failure_count=0, failure_type='cleared' WHERE model=?`, model)
 	if err == sql.ErrNoRows {
-		return nil // No failure to clear, that's ok
+		return nil
 	}
 	return err
 }
 
-// ResetAllFailures clears all failure records (useful for testing or manual reset)
 func (s *FailureStore) ResetAllFailures() error {
 	_, err := s.db.Exec(`DELETE FROM failures`)
 	return err

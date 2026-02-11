@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -12,20 +12,19 @@ import (
 
 type OpenrouterProvider struct {
 	client     *openai.Client
-	modelNames []string // Shared storage for model names
+	modelNames []string
 }
 
 func NewOpenrouterProvider(apiKey string) *OpenrouterProvider {
 	config := openai.DefaultConfig(apiKey)
 	config.BaseURL = "https://openrouter.ai/api/v1/"
-	
-	// Add timeout configuration
+
 	if config.HTTPClient == nil {
 		config.HTTPClient = &http.Client{
 			Timeout: 30 * time.Second,
 		}
 	}
-	
+
 	return &OpenrouterProvider{
 		client:     openai.NewClientWithConfig(config),
 		modelNames: []string{},
@@ -33,61 +32,52 @@ func NewOpenrouterProvider(apiKey string) *OpenrouterProvider {
 }
 
 func (o *OpenrouterProvider) Chat(messages []openai.ChatCompletionMessage, modelName string) (openai.ChatCompletionResponse, error) {
-	// Validate inputs
 	if modelName == "" {
 		return openai.ChatCompletionResponse{}, fmt.Errorf("model name cannot be empty")
 	}
 	if len(messages) == 0 {
 		return openai.ChatCompletionResponse{}, fmt.Errorf("messages cannot be empty")
 	}
-	
-	// Create a chat completion request with timeout
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	req := openai.ChatCompletionRequest{
 		Model:    modelName,
 		Messages: messages,
 		Stream:   false,
 	}
 
-	// Call the OpenAI API to get a complete response
 	resp, err := o.client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		return openai.ChatCompletionResponse{}, fmt.Errorf("chat completion failed: %w", err)
 	}
 
-	// Return the complete response
 	return resp, nil
 }
 
 func (o *OpenrouterProvider) ChatStream(messages []openai.ChatCompletionMessage, modelName string) (*openai.ChatCompletionStream, error) {
-	// Validate inputs
 	if modelName == "" {
 		return nil, fmt.Errorf("model name cannot be empty")
 	}
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("messages cannot be empty")
 	}
-	
-	// Create a chat completion request with timeout
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	// Note: Don't defer cancel here as the stream needs the context to remain valid
-	
+
 	req := openai.ChatCompletionRequest{
 		Model:    modelName,
 		Messages: messages,
 		Stream:   true,
 	}
 
-	// Call the OpenAI API to get a streaming response
 	stream, err := o.client.CreateChatCompletionStream(ctx, req)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("stream creation failed: %w", err)
 	}
 
-	// Return the stream for further processing
 	return stream, nil
 }
 
@@ -112,33 +102,28 @@ type Model struct {
 func (o *OpenrouterProvider) GetModels() ([]Model, error) {
 	currentTime := time.Now().Format(time.RFC3339)
 
-	// Fetch models from the OpenAI API with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	modelsResponse, err := o.client.ListModels(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
 
-	// Clear shared model storage
 	o.modelNames = []string{}
 
 	var models []Model
 	for _, apiModel := range modelsResponse.Models {
-		// Split model name
 		parts := strings.Split(apiModel.ID, "/")
 		name := parts[len(parts)-1]
 
-		// Store name in shared storage
 		o.modelNames = append(o.modelNames, apiModel.ID)
 
-		// Create model struct
 		model := Model{
 			Name:       name,
 			Model:      name,
 			ModifiedAt: currentTime,
-			Size:       0, // Stubbed size
+			Size:       0,
 			Digest:     name,
 			Details: ModelDetails{
 				ParentModel:       "",
@@ -156,7 +141,6 @@ func (o *OpenrouterProvider) GetModels() ([]Model, error) {
 }
 
 func (o *OpenrouterProvider) GetModelDetails(modelName string) (map[string]interface{}, error) {
-	// Stub response; replace with actual model details if available
 	currentTime := time.Now().Format(time.RFC3339)
 	return map[string]interface{}{
 		"license":    "STUB License",
@@ -176,7 +160,6 @@ func (o *OpenrouterProvider) GetModelDetails(modelName string) (map[string]inter
 }
 
 func (o *OpenrouterProvider) GetFullModelName(alias string) (string, error) {
-	// If modelNames is empty or not populated yet, try to get models first
 	if len(o.modelNames) == 0 {
 		_, err := o.GetModels()
 		if err != nil {
@@ -184,21 +167,39 @@ func (o *OpenrouterProvider) GetFullModelName(alias string) (string, error) {
 		}
 	}
 
-	// First try exact match
 	for _, fullName := range o.modelNames {
 		if fullName == alias {
 			return fullName, nil
 		}
 	}
 
-	// Then try suffix match
 	for _, fullName := range o.modelNames {
 		if strings.HasSuffix(fullName, alias) {
 			return fullName, nil
 		}
 	}
 
-	// If no match found, just use the alias as is
-	// This allows direct use of model names that might not be in the list
 	return alias, nil
+}
+
+// GetEmbeddings 获取文本的嵌入向量
+func (o *OpenrouterProvider) GetEmbeddings(input string, model string) ([]float32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := openai.EmbeddingRequest{
+		Input: []string{input},
+		Model: openai.EmbeddingModel(model),
+	}
+
+	resp, err := o.client.CreateEmbeddings(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("embeddings creation failed: %w", err)
+	}
+
+	if len(resp.Data) == 0 {
+		return nil, fmt.Errorf("no embeddings returned")
+	}
+
+	return resp.Data[0].Embedding, nil
 }
